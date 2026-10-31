@@ -15,39 +15,33 @@ extern "C" {
 * Type definitions
 * ----------------------------------------------------------------------------------------------- */
 
-typedef struct sad_vec2
-{
+typedef struct sad_vec2 {
 	sad_float x;
 	sad_float y;
 } sad_vec2;
 
-typedef struct sad_vec3
-{
+typedef struct sad_vec3 {
 	sad_float x;
 	sad_float y;
 	sad_float z;
 } sad_vec3;
 
-typedef struct sad_vec4
-{
+typedef struct sad_vec4 {
 	sad_float x;
 	sad_float y;
 	sad_float z;
 	sad_float w;
 } sad_vec4, sad_quat;
 
-typedef struct sad_mat3
-{
+typedef struct sad_mat3 {
 	sad_float m[9];
 } sad_mat3;
 
-typedef struct sad_mat4
-{
+typedef struct sad_mat4 {
 	sad_float m[16];
 } sad_mat4;
 
-typedef struct sad_t3d
-{
+typedef struct sad_t3d {
 	sad_vec3 location;
 	sad_quat rotation;
 	sad_vec3 scale;

@@ -359,6 +359,9 @@ SAD_API uint16_t* sad_utf8_to_utf16(const uint8_t* seq, sad_int* out_len)
         x += size;
     }
 
+    if (out_len != NULL)
+        *out_len = len;
+
     /* allocate new string */
     string = malloc(sizeof(uint16_t) * (len + 1));
     string[len] = 0;
@@ -389,6 +392,9 @@ SAD_API uint32_t* sad_utf8_to_utf32(const uint8_t* seq, sad_int* out_len)
      * How many utf32 code points do I need to hold this utf8 string? */
     for (x = 0, len = 0; seq[x] != 0; len++)
         x += 1 + (seq[x] > 0xBF) + (seq[x] > 0xDF) + (seq[x] > 0xEF);
+
+    if (out_len != NULL)
+        *out_len = len;
 
     /* allocate new string */
     string = malloc(sizeof(uint32_t) * (len + 1));

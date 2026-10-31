@@ -163,7 +163,7 @@ SAD_API void sad_fmap_trim(sad_fmap* map);
 /**
  * @param map target flat map
  * @param bucket bucket to look for
- * @param out_index pointer to int, filled with index on success
+ * @param out_index pointer to int, filled with index of found bucket or where it would be inserted
  * @return pointer to existing bucket or NULL on fail
  */
 SAD_API void* sad_fmap_getidx(sad_fmap* map, const void* bucket, sad_int* out_idx);

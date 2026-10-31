@@ -13,34 +13,37 @@ A general purpose cross-platform C89 library to simplify the creation of tools a
 ### sadcore.h
 
 - includes c standard library files <stddef.h>, <stdint.h> (if it exists), <limits.h>, <assert.h>, <stdlib.h>, <string.h>, <time.h>
-- compiler detection and macro definition SAD_CC_*
-- cpu architecure detection and macro definition SAD_ARCH_*
-- os detection and macro definition SAD_OS_*
-- build detection and macro definition SAD_BUILD_RELEASE, SAD_BUILD_DEBUG
-- cpu feature detection and macro definitions SAD_HAS_I64, SAD_HAS_F64, SAD_CACHE_LINE
+- compiler detection and macro definition `SAD_CC_*`
+- cpu architecure detection and macro definition `SAD_ARCH_*`
+- os detection and macro definition `SAD_OS_*`
+- build detection and macro definition `SAD_BUILD_RELEASE`, `SAD_BUILD_DEBUG`
+- cpu feature detection and macro definitions `SAD_HAS_I64`, `SAD_HAS_F64`, `SAD_CACHE_LINE`
 - macros for compiler agnostic intrinsics
-- typedefs for core data types sad_int, sad_uint, sad_iptr, sad_uptr, sad_float
+- typedefs for core data types `sad_int`, `sad_uint`, `sad_iptr`, `sad_uptr`, `sad_float`
 
 ### sadcontainers.h
 
 Implementations of various container data structures.
 
-- sad_array
-- sad_string + utf-, 8, 16 and 32 conversion aswell as base64
-- sad_fmap, flat binary search map
-- sad_fdict, flat array, open addressing hashmap using robin hood hashing
-- sad_sdict, sparse hashmap with a dense bucket array using robin hood hashing
+- `sad_array`
+- `sad_string` + utf-, 8, 16 and 32 conversion aswell as base64
+- `sad_fmap`, flat binary search map
+- `sad_fdict`, flat array, open addressing hashmap using robin hood hashing
+- `sad_sdict`, sparse hashmap with a dense bucket array using robin hood hashing
 
 ### sadmath.h
 
-Implements some int and float math in addition to vec2, vecc3, vec4, mat3 (3x3) and mat4 (4x4).
+Implements some int and float math in addition to `vec2`, `vec3`, `vec4`, `mat3` (3x3) and `mat4` (4x4).
 
 ## Roadmap
+
+### Generic Function Refactor
+
+Generic functions like `sad_string_hash`, `sad_string_cmp`, `sad_display_res_cmp` should use `const void*` arguments. Casting from a function pointer with typed arguments to `void*` is undefined behaviour and could break on some platforms or compilers.
 
 ### sadwindow.h
 
 Opengl compatible window creation and manipulation.
-
 
 ### saddraw.h
 
@@ -85,3 +88,7 @@ Fast yaml parser and serialization/marshalling.
 ### sadntfs.h??
 
 Read raw ntfs filesystem from partition, including deleted structures and restore them.
+
+### sadascii.h
+
+Advanced console output and effects.

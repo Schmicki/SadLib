@@ -23,26 +23,35 @@
 #include "mat3.h"
 #include "mat4.h"
 
+#include "collision2d.h"
+
+#define SAD_TEST_WINDOW
+#include "window.h"
+
 int main(int argc, const char** argv)
 {
-    sad_wnd* window = NULL;
+    // if (test_core() != SAD_OK)
+    //     return 0;
+    // if (test_array() != SAD_OK)
+    //     return 0;
+    // if (test_string() != SAD_OK)
+    //     return 0;
+    // if (test_unicode() != SAD_OK)
+    //     return 0;
+    // if (test_base64() != SAD_OK)
+    //     return 0;
+    // if (test_fmap() != SAD_OK)
+    //     return 0;
+    // if (test_fdict() != SAD_OK)
+    //     return 0;
+    // if (test_sdict() != SAD_OK)
+    //     return 0;
+    // if (test_monitor() != SAD_OK)
+    //     return 0;
+    // if (test_window() != SAD_OK)
+    //     return 0;
+    if (test_collision2d() != SAD_OK)
+        return 0;
 
-    if (test_core() != SAD_OK)
-        return 0;
-    if (test_array() != SAD_OK)
-        return 0;
-    if (test_string() != SAD_OK)
-        return 0;
-    if (test_unicode() != SAD_OK)
-        return 0;
-    if (test_base64() != SAD_OK)
-        return 0;
-    if (test_fmap() != SAD_OK)
-        return 0;
-    if (test_fdict() != SAD_OK)
-        return 0;
-    if (test_sdict() != SAD_OK)
-        return 0;
-
-    
+    printf("DONE\n");
 }

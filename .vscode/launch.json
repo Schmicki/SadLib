@@ -7,7 +7,7 @@
             "program": "${workspaceFolder}/bin/Debug/Test.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
+            "cwd": "${workspaceRoot}",
             "environment": [],
             "console": "integratedTerminal"
         },
@@ -18,7 +18,7 @@
             "program": "${workspaceFolder}/bin/Release/Test.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
+            "cwd": "${workspaceRoot}",
             "environment": [],
             "console": "integratedTerminal"
         }
