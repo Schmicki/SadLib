@@ -1,0 +1,72 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "gen-project/windows/vs2022",
+            "type": "shell",
+            "command": "third-party/premake/premake5.exe",
+            "args": [
+                "vs2022"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "gen-project/linux/make",
+            "type": "shell",
+            "command": "third-party/premake/premake5",
+            "args": [
+                "gmake2"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "build/windows/x64/debug",
+            "type": "shell",
+            "command": "msbuild",
+            "args": [
+                "SadLib.sln",
+                "/p:GenerateFullPaths=true",
+                "/p:Configuration=Debug",
+                "/p:Platform=Win64",
+                "/t:build",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "silent"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "build/windows/x64/release",
+            "type": "shell",
+            "command": "msbuild",
+            "args": [
+                "SadLib.sln",
+                "/p:GenerateFullPaths=true",
+                "/p:Configuration=Release",
+                "/p:Platform=Win64",
+                "/t:build",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": {
+                "kind": "build"
+            },
+            "presentation": {
+                "reveal": "silent"
+            },
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}
