@@ -48,10 +48,10 @@ int main(int argc, const char** argv)
     //     return 0;
     // if (test_monitor() != SAD_OK)
     //     return 0;
-    // if (test_window() != SAD_OK)
-    //     return 0;
-    if (test_collision2d() != SAD_OK)
+    if (test_window() != SAD_OK)
         return 0;
+    // if (test_collision2d() != SAD_OK)
+    //     return 0;
 
     printf("DONE\n");
 }

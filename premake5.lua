@@ -1,17 +1,17 @@
 workspace "sadlib"
-    configurations { "Debug", "Release" }
-    platforms { "Win32", "Win64" }
+    configurations { "debug", "release" }
+    platforms { "win-x86", "win-x64" }
 
-    targetdir "bin/%{cfg.buildcfg}/"
-    objdir"obj/%{cfg.buildcfg}/"
+    targetdir "bin/%{cfg.platform}/%{cfg.buildcfg}/"
+    objdir"obj/%{cfg.platform}/%{cfg.buildcfg}/"
 
-    defaultplatform "Win64"
-    startproject "Test"
+    defaultplatform "win-x64"
+    startproject "test"
 
-    filter "platforms:*32"
+    filter "platforms:*x86"
         architecture "x86"
 
-    filter "platforms:*64"
+    filter "platforms:*x64"
         architecture "x86_64"
     
     filter "action:vs*"

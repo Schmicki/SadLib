@@ -51,6 +51,7 @@ Makefile
 *.i*86
 *.x86_64
 *.hex
+!premake5.exe
 
 # Debug files
 *.dSYM/

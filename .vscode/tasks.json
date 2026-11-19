@@ -32,10 +32,10 @@
             "type": "shell",
             "command": "msbuild",
             "args": [
-                "SadLib.sln",
+                "sadlib.sln",
                 "/p:GenerateFullPaths=true",
-                "/p:Configuration=Debug",
-                "/p:Platform=Win64",
+                "/p:Configuration=debug",
+                "/p:Platform=win-x64",
                 "/t:build",
                 "/consoleloggerparameters:NoSummary"
             ],
@@ -53,10 +53,10 @@
             "type": "shell",
             "command": "msbuild",
             "args": [
-                "SadLib.sln",
+                "sadlib.sln",
                 "/p:GenerateFullPaths=true",
-                "/p:Configuration=Release",
-                "/p:Platform=Win64",
+                "/p:Configuration=release",
+                "/p:Platform=win-x64",
                 "/t:build",
                 "/consoleloggerparameters:NoSummary"
             ],

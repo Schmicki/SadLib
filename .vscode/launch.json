@@ -1,10 +1,10 @@
 {
     "configurations": [
         {
-            "name": "windows/debug",
+            "name": "win-x64/debug",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/Debug/Test.exe",
+            "program": "${workspaceFolder}/bin/win-x64/debug/test.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",
@@ -12,10 +12,10 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "windows/release",
+            "name": "win-x64/release",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/Release/Test.exe",
+            "program": "${workspaceFolder}/bin/win-x64/release/test.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",

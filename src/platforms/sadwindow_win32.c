@@ -97,12 +97,15 @@ typedef HRESULT (WINAPI *DwmIsCompositionEnabledType)(BOOL* pfEnabled);
 typedef HRESULT (WINAPI *DwmExtendFrameIntoClientAreaType)(HWND hWnd, const DWM_MARGINS* pMarInset);
 typedef HRESULT (WINAPI *DwmEnableBlurBehindWindowType)(HWND hWnd, const DWM_BLURBEHIND* pBlurBehind);
 typedef BOOL (WINAPI *DwmDefWindowProcType)(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, LRESULT *plResult);
+typedef HRESULT (WINAPI *DwmSetWindowAttributeType)(HWND hwnd, DWORD dwAttribute, LPCVOID pvAttribute, DWORD cbAttribute);
+
 
 static HMODULE hDwm = NULL;
 static DwmIsCompositionEnabledType DwmIsCompositionEnabled = NULL;
 static DwmExtendFrameIntoClientAreaType DwmExtendFrameIntoClientArea = NULL;
 static DwmEnableBlurBehindWindowType DwmEnableBlurBehindWindow = NULL;
 static DwmDefWindowProcType DwmDefWindowProc = NULL;
+static DwmSetWindowAttributeType DwmSetWindowAttribute = NULL;
 
 /*
 * Shellscaling Compatibility
@@ -239,6 +242,10 @@ static SetupDiOpenDevRegKeyType SetupDiOpenDevRegKey = NULL;
 * User32 Compatibility
 * ----------------------------------------------------------------------------------------------- */
 
+#ifndef WM_UNICHAR
+#define WM_UNICHAR 0x109
+#endif
+
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED                   0x02E0
 #endif /* WM_DPICHANGED */
@@ -281,12 +288,12 @@ typedef struct sad_wnd {
     /* cached window placement for mode switches */
     WINDOWPLACEMENT old_wp;
 
-    /* event callbacks */
-    sad_wnd_size_callback on_size;
-    sad_wnd_size_callback on_resolution;
-    sad_wnd_draw_callback on_draw;
-    sad_wnd_hittest_callback on_hittest;
-    /*sad_wnd_input_callback on_input;*/
+    /* event callback */
+    sad_wnd_msg_callback on_message;
+
+    /* mouse event state */
+    int mouse_last_x;
+    int mouse_last_y;
 } sad_wnd;
 
 /* internal data structure used for caching display modes */
@@ -323,6 +330,9 @@ static void _wnd_getdpi(sad_wnd* wnd, int* x, int* y);
 /* initialize window bounds from parameters */
 static void _wnd_bounds(RECT* bounds, int width, int height, int flags, int style,
     const sad_wnd_config* cfg);
+
+/* get the bounds of the monitor the window is currently on */
+static int _wnd_monitor_bounds(sad_wnd* wnd, int* x, int* y, int* width, int* height);
 
 /* create os window */
 static sad_wnd* _wnd_create(const char* name, const RECT* bounds, int style, int flags);
@@ -390,6 +400,9 @@ SAD_API sad_wnd* sad_wnd_create(const char *name, int width, int height, int fla
         if (cfg && cfg->display_mode)
             wnd->display_mode = *cfg->display_mode;
     }
+        
+    GetWindowPlacement(wnd->handle, &wnd->old_wp);
+    wnd->old_wp.showCmd = (flags & SAD_WND_MAXIMIZE) ? SW_MAXIMIZE : SW_RESTORE;
 
     /* "map" window */
     if (!(flags & SAD_WND_HIDDEN)) {
@@ -417,87 +430,122 @@ SAD_API void *sad_wnd_handle(sad_wnd *wnd)
 
 /*  Setters ----------------------------------------------------------------- */
 
-// void sad_wnd_set_title(sad_wnd* wnd, const char* title)
-// {
-//     wchar_t* wtitle = sad__mbstowcs(title);
-//     SetWindowTextW(wnd->handle, wtitle);
-//     free(wtitle);
-// }
-
-// void sad_wnd_move(sad_wnd* wnd, int x, int y)
-// {
-//     int w, h;
-//     /* TODO: handle behaviour when in fullscreen and borderless modes */
-//     sad_wnd_size(wnd, &w, &h);
-//     MoveWindow(wnd->handle, x, y, w, h, TRUE);
-// }
-
-// void sad_wnd_resize(sad_wnd* wnd, int w, int h)
-// {
-//     int x, y;
-//     /* TODO: change fullscreen resolution when in fullscreen mode */
-//     sad_wnd_pos(wnd, &x, &y);
-//     MoveWindow(wnd->handle, x, y, w, h, TRUE);
-// }
-
-// void sad_wnd_place(sad_wnd* wnd, int x, int y, int w, int h)
-// {
-//     MoveWindow(wnd->handle, x, y, w, h, TRUE);
-// }
-
-// void sad_wnd_minimize(sad_wnd* wnd)
-// {
-//     if (wnd->flags & SAD_WND_MINIMIZE)
-//         return;
+SAD_API void sad_wnd_rename(sad_wnd* wnd, const char* name)
+{
+    wchar_t* wtitle;
+    size_t len;
     
-//     wnd->flags |= SAD_WND_MINIMIZE;
-//     wnd->flags &= ~SAD_WND_MAXIMIZE;
+    if (!name) return;
 
-//     if (IsWindowVisible(wnd->handle)) {
-//         ShowWindow(wnd->handle, SW_MINIMIZE);
-//     }
-// }
+    wtitle = sad_utf8_to_utf16(name, NULL);
+    SetWindowTextW(wnd->handle, wtitle);
+    free(wtitle);
 
-// void sad_wnd_maximize(sad_wnd* wnd)
-// {
-//     if (wnd->flags & SAD_WND_MAXIMIZE)
-//         return;
+    if (wnd->name) free(wnd->name);
+    len = strlen(name) + 1;
+    wnd->name = malloc(len);
+    memcpy(wnd->name, name, len);
+}
+
+SAD_API void sad_wnd_move(sad_wnd* wnd, int x, int y)
+{
+    POINT p = {0};
+    RECT r;
+
+    if (wnd->flags & SAD_WND_FULLSCREEN)
+        return;
     
-//     if (wnd->flags & (SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN)) {
-//         wnd->cached_wp.showCmd = SW_MAXIMIZE;
-//         sad_window_restore(wnd);
-//         return;
-//     }
+    ClientToScreen(wnd->handle, &p);
+    GetWindowRect(wnd->handle, &r);
+    SetWindowPos(wnd->handle, NULL,
+        r.left + x - p.x,
+        r.top + y - p.y,
+        0, 0, SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+}
+
+SAD_API void sad_wnd_resize(sad_wnd* wnd, int w, int h)
+{
+    if (wnd->flags & SAD_WND_FULLSCREEN) {
+        wnd->display_mode.width = w;
+        wnd->display_mode.height = h;
+        _wnd_enter_fullscreen(wnd);
+    }
+    else {
+        RECT cr, wr;
+        GetClientRect(wnd->handle, &cr);
+        GetWindowRect(wnd->handle, &wr);
+        SetWindowPos(wnd->handle, NULL, 0, 0,
+            wr.right - wr.left + w - cr.right,
+            wr.bottom - wr.top + h - cr.bottom,
+            SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    }
+}
+
+SAD_API void sad_wnd_place(sad_wnd* wnd, int x, int y, int w, int h)
+{
+    if (wnd->flags & SAD_WND_FULLSCREEN) {
+        wnd->display_mode.width = w;
+        wnd->display_mode.height = h;
+        _wnd_enter_fullscreen(wnd);
+    }
+    else {
+        POINT p = {0};
+        RECT cr, wr;
+
+        ClientToScreen(wnd->handle, &p);
+        GetClientRect(wnd->handle, &cr);
+        GetWindowRect(wnd->handle, &wr);
+        SetWindowPos(wnd->handle, NULL,
+            wr.left + x - p.x,
+            wr.top + y - p.y,
+            wr.right - wr.left + w - cr.right,
+            wr.bottom - wr.top + h - cr.bottom,
+            SWP_NOZORDER|SWP_NOACTIVATE);
+    }
+}
+
+SAD_API void sad_wnd_minimize(sad_wnd* wnd)
+{
+    if (wnd->flags & SAD_WND_MINIMIZE)
+        return;
+
+    if (IsWindowVisible(wnd->handle)) {
+        ShowWindow(wnd->handle, SW_MINIMIZE);
+    }
+}
+
+SAD_API void sad_wnd_maximize(sad_wnd* wnd)
+{
+    if (wnd->flags & SAD_WND_MAXIMIZE)
+        return;
     
-//     wnd->flags |= SAD_WND_MAXIMIZE;
-//     wnd->flags &= ~SAD_WND_MINIMIZE;
+    if (wnd->flags & (SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN)) {
+        sad_wnd_restore(wnd);
+        return;
+    }
 
-//     if (IsWindowVisible(wnd->handle)) {
-//         ShowWindow(wnd->handle, SW_MAXIMIZE);
-//     }
-// }
+    if (IsWindowVisible(wnd->handle)) {
+        ShowWindow(wnd->handle, SW_MAXIMIZE);
+    }
+}
 
-// void sad_wnd_restore(sad_wnd* wnd)
-// {
-//     if ((wnd->flags & SAD_WND_MINIMIZE) ||
-//         (wnd->flags & SAD_WND_MAXIMIZE))
-//         return;
-    
-//     wnd->flags &= ~(SAD_WND_MINIMIZE | SAD_WND_MAXIMIZE);
+SAD_API void sad_wnd_restore(sad_wnd* wnd)
+{
+    if (!(wnd->flags & SAD_WND_MINIMIZE) &&
+        !(wnd->flags & SAD_WND_MAXIMIZE))
+        return;
 
-//     if (IsWindowVisible(wnd->handle)) {
-//         ShowWindow(wnd->handle, SW_SHOWNORMAL);
-//     }
-// }
+    if (IsWindowVisible(wnd->handle)) {
+        ShowWindow(wnd->handle, SW_RESTORE);
+    }
+}
 
-void sad_wnd_show(sad_wnd* wnd)
+SAD_API void sad_wnd_show(sad_wnd* wnd)
 {
     int show_cmd;
 
     if (IsWindowVisible(wnd->handle))
         return;
-    
-    wnd->flags &= ~SAD_WND_HIDDEN;
 
     if (wnd->flags & (SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN)) {
         show_cmd = (wnd->flags & SAD_WND_MINIMIZE) ? SW_SHOWMINIMIZED : SW_SHOWNORMAL;
@@ -509,220 +557,308 @@ void sad_wnd_show(sad_wnd* wnd)
     ShowWindow(wnd->handle, show_cmd);
 }
 
-// void sad_wnd_hide(sad_wnd* wnd)
-// {
-//     if (!IsWindowVisible(wnd->handle))
-//         return;
+SAD_API void sad_wnd_hide(sad_wnd* wnd)
+{
+    if (!IsWindowVisible(wnd->handle))
+        return;
+    ShowWindow(wnd->handle, SW_HIDE);
+}
+
+SAD_API void sad_wnd_windowed(sad_wnd* wnd, int width, int height)
+{
+    int flags = wnd->flags;
+    int x, y, w, h;
+
+    if (!(wnd->flags & (SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN)))
+        return;
     
-//     wnd->flags |= SAD_WND_HIDDEN;
-//     ShowWindow(wnd->handle, SW_HIDE);
-// }
-
-// void sad_wnd_windowed(sad_wnd* wnd)
-// {
-//     int flags = wnd->flags;
-
-//     if (!(wnd->flags & (SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN)))
-//         return;
-        
-//     wnd->flags &= ~(SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN);
-//     wnd->flags &= ~(SAD_WND_MINIMIZE | SAD_WND_MAXIMIZE);
-
-//     if (wnd->cached_wp.showCmd == SW_MAXIMIZE) {
-//         wnd->flags |= SAD_WND_MAXIMIZE;
-//     }
-
-//     sad__apply_style(wnd, flags);
-//     sad__update_dwm_frame(wnd);
-//     SetWindowPlacement(wnd->handle, &wnd->cached_wp);
-// }
-
-// void sad_wnd_borderless(sad_wnd* wnd)
-// {
-//     int x, y, w, h;
-//     if (wnd->flags & SAD_WND_BORDERLESS)
-//         return;
+    /* Update flags */
+    wnd->flags &= ~(SAD_WND_BORDERLESS | SAD_WND_FULLSCREEN);
+    wnd->flags &= ~(SAD_WND_MINIMIZE | SAD_WND_MAXIMIZE);
     
-//     if (!(wnd->flags & SAD_WND_FULLSCREEN)) {
-//         int flags = wnd->flags;
-//         GetWindowPlacement(wnd->handle, &wnd->cached_wp);
-        
-//         wnd->flags = (wnd->flags & ~0x3) | SAD_WND_BORDERLESS;
-//         wnd->flags &= ~(SAD_WND_MINIMIZE | SAD_WND_MAXIMIZE);
+    /* Set window style & frame */
+    _wnd_apply_style(wnd);
+    _wnd_apply_frame(wnd);
+    
+    /* Reset monitor */
+    if (flags & SAD_WND_FULLSCREEN) {
+        sad_monitor_reset_mode(wnd->monitor);
+    }
 
-//         sad__apply_style(wnd, flags);
-//         sad__update_dwm_frame(wnd);
-//     }
+    /* Restore placement */
+    if (width <= 0 || height <= 0) {
+        SetWindowPlacement(wnd->handle, &wnd->old_wp);
+        return;
+    }
 
-//     sad__get_screen_rect(wnd->handle, &x, &y, &w, &h);
-//     MoveWindow(wnd->handle, x, y, w, h, 1);
-// }
+    /* Center position */
+    if (!_wnd_monitor_bounds(wnd, &x, &y, &w, &h)) {
+        sad_wnd_place(wnd, 32, 32, width, height);
+        return;
+    }
 
-// void sad_wnd_fullscreen(sad_wnd* wnd)
-// {
+    sad_wnd_place(wnd,
+        x + (w - width) / 2,
+        y + (h - height) / 2,
+        width, height);
+}
 
-// }
+SAD_API void sad_wnd_borderless(sad_wnd* wnd, int width, int height)
+{
+    int flags = wnd->flags;
+    int got_bounds;
+    int x, y, w, h;
 
-// void sad_wnd_set_flag(sad_wnd* wnd, int flag, int enabled)
-// {
+    if (wnd->flags & SAD_WND_BORDERLESS)
+        return;
+    
+    /* Update flags */
+    wnd->flags &= ~SAD_WND_FULLSCREEN;
+    wnd->flags &= ~(SAD_WND_MINIMIZE | SAD_WND_MAXIMIZE);
+    wnd->flags |= SAD_WND_BORDERLESS;
+    
+    if (flags & SAD_WND_FULLSCREEN) {
+        /* leaving fullscreen mode, reset monitor */
+        sad_monitor_reset_mode(wnd->monitor);
+    } else {
+        /* leaving windowed mode */
+        GetWindowPlacement(wnd->handle, &wnd->old_wp);
+    }
+    
+    /* Set window style & frame */
+    _wnd_apply_style(wnd);
+    _wnd_apply_frame(wnd);
 
-// }
+    got_bounds = _wnd_monitor_bounds(wnd, &x, &y, &w, &h);
 
-// void sad_wnd_set_backdrop(sad_wnd* wnd, int backdrop)
-// {
+    /* Borderless fullscreen */
+    if (width <= 0 || height <= 0) {
+        if (!got_bounds) {
+            MoveWindow(wnd->handle, 32, 32, 768, 454, 1);
+        } else {
+            MoveWindow(wnd->handle, x, y, w, h, 1);
+        }
+        return;
+    }
+    
+    if (!got_bounds) {
+        MoveWindow(wnd->handle, 40, 40, width, height, 1);
+        return;
+    }
 
-// }
+    MoveWindow(wnd->handle,
+        x + (w - width) / 2,
+        y + (h - height) / 2,
+        width, height, 1);
+}
+
+SAD_API void sad_wnd_fullscreen(sad_wnd* wnd, int monitor, const sad_display_mode* display_mode)
+{
+    int flags = wnd->flags;
+
+    if (flags & SAD_WND_BORDERLESS) {
+        wnd->flags &= ~SAD_WND_BORDERLESS;
+    } else if (flags & SAD_WND_FULLSCREEN) {
+        /* restarting fullscreen mode, reset monitor */
+        sad_monitor_reset_mode(wnd->monitor);
+    } else {
+        /* leaving windowed mode */
+        GetWindowPlacement(wnd->handle, &wnd->old_wp);
+    }
+
+    /* update flags */
+    wnd->flags |= SAD_WND_FULLSCREEN;
+    wnd->monitor = monitor;
+    
+    /* Set window style & frame */
+    _wnd_apply_style(wnd);
+    _wnd_apply_frame(wnd);
+
+    if (display_mode) {
+        wnd->display_mode = *display_mode;
+    } else {
+        memset(&wnd->display_mode, 0, sizeof(sad_display_mode));
+    }
+    _wnd_enter_fullscreen(wnd);
+}
+
+SAD_API void sad_wnd_set_flag(sad_wnd* wnd, int flag, int enabled)
+{
+    switch (flag)
+    {
+    case SAD_WND_UNDECORATED:
+    case SAD_WND_NORESIZE:
+    case SAD_WND_OVERFRAME:
+        if (enabled) wnd->flags |= flag;
+        else wnd->flags &= ~flag;
+        _wnd_apply_style(wnd);
+        _wnd_apply_frame(wnd);
+        break;
+    case SAD_WND_TRANSPARENT:
+        /* code */
+        break;
+    
+    default:
+        break;
+    }
+}
+
+SAD_API void sad_wnd_set_backdrop(sad_wnd* wnd, int backdrop)
+{
+    wnd->backdrop = backdrop;
+    if (DwmSetWindowAttribute) {
+        int backdrop = DWMSBT_MAINWINDOW;
+        switch (wnd->backdrop)
+        {
+        case SAD_WNDBD_MICA:
+            backdrop = DWMSBT_MAINWINDOW;
+            break;
+        case SAD_WNDBD_MICA_ALT:
+            backdrop = DWMSBT_TABBEDWINDOW;
+            break;
+        case SAD_WNDBD_ACRYLIC: 
+        case SAD_WNDBD_BLUR:
+            backdrop = DWMSBT_TRANSIENTWINDOW;
+            break;
+        default: break;
+        }
+        DwmSetWindowAttribute(wnd->handle, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+        _wnd_apply_frame(wnd);
+    }
+}
 
 /*  Getters ----------------------------------------------------------------- */
 
-// char *sad_wnd_title(sad_wnd *wnd)
-// {
-//     int len;
-//     wchar_t* wbuf;
-//     char* buf;
+SAD_API const char *sad_wnd_name(sad_wnd *wnd)
+{
+    return wnd->name;
+}
+
+SAD_API void sad_wnd_pos(sad_wnd *wnd, int *x, int *y)
+{
+    POINT p = {0, 0};
+    ClientToScreen(wnd->handle, (POINT*)&p);
+    *x = p.x;
+    *y = p.y;
+}
+
+SAD_API void sad_wnd_size(sad_wnd *wnd, int *w, int *h)
+{
+    RECT r;
+    GetClientRect(wnd->handle, &r);
+    *w = r.right;
+    *h = r.bottom;
+}
+
+SAD_API void sad_wnd_bounds(sad_wnd* wnd, int* x, int* y, int* w, int* h)
+{
+    RECT r;
+    GetClientRect(wnd->handle, &r);
+    ClientToScreen(wnd->handle, (POINT*)&r);
+    *x = r.left;
+    *y = r.top;
+    *w = r.right;
+    *h = r.bottom;
+}
+
+SAD_API int sad_wnd_minimized(sad_wnd* wnd)
+{
+    return IsIconic(wnd->handle);
+}
+
+SAD_API int sad_wnd_maximized(sad_wnd* wnd)
+{
+    return IsZoomed(wnd->handle);
+}
+
+SAD_API int sad_wnd_visible(sad_wnd* wnd)
+{
+    return IsWindowVisible(wnd->handle);
+}
+
+/* SAD_WND_BORDERLESS, SAD_WND_FULLSCREEN or 0 for windowed */
+SAD_API int sad_wnd_mode(sad_wnd* wnd)
+{
+    return wnd->flags & (SAD_WND_FULLSCREEN | SAD_WND_BORDERLESS);
+}
+
+SAD_API int sad_wnd_flag(sad_wnd* wnd, int flag)
+{
+    return (wnd->flags & flag) != 0;
+}
+
+SAD_API int sad_wnd_backdrop(sad_wnd* wnd)
+{
+    return wnd->backdrop;
+}
+
+
+SAD_API void sad_wnd_framesize(sad_wnd* wnd, int* left, int* top, int* right, int* bottom)
+{
+    RECT r = {0};
+    AdjustWindowRectEx(&r, (LONG)GetWindowLongPtrA(wnd->handle, GWL_STYLE), FALSE, 0);
+    *left = -r.left;
+    *top = -r.top;
+    *right = r.right;
+    *bottom = r.bottom;
+}
+
+SAD_API void sad_wnd_resolution(sad_wnd* wnd, int* w, int* h)
+{
+    RECT r;
+    GetClientRect(wnd->handle, &r);
+    *w = r.right;
+    *h = r.bottom;
+}
+
+float sad_wnd_dpi(sad_wnd* wnd)
+{
+    int x, y;
+    _wnd_getdpi(wnd, &x, &y);
+    return (float)x / 96.0f;
+}
+
+typedef struct is_wnd_monitor_data {
+    HMONITOR monitor;
+    int count;
+    int index;
+} is_wnd_monitor_data;
+
+static int is_wnd_monitor(HMONITOR mon, HDC hdc, LPRECT rect, LPARAM lp)
+{
+    is_wnd_monitor_data* data = (is_wnd_monitor_data*)lp;
+    MONITORINFO mi = {sizeof(MONITORINFO)};
+    int primary = 0;
+
+    if (GetMonitorInfo(mon, &mi)) {
+        primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+    }
+
+    if (data->monitor == mon) {
+        data->index = primary ? 0 : data->count;
+        return FALSE;
+    }
+
+    if (!primary) data->count++;
+    return TRUE;
+}
+
+SAD_API int sad_wnd_monitor(sad_wnd *wnd)
+{
+    is_wnd_monitor_data data = {
+        MonitorFromWindow(wnd->handle, MONITOR_DEFAULTTOPRIMARY), 1, 0
+    };
     
-//     len = GetWindowTextLengthW(wnd->handle) + 1;
-//     wbuf = malloc(sizeof(wchar_t) * len);
-//     GetWindowTextW(wnd->handle, wbuf, len);
+    EnumDisplayMonitors(NULL, NULL, &is_wnd_monitor, (LPARAM)&data);
+    return data.index;
+}
 
-//     buf = sad__wcstombs(wbuf);
-//     free(wbuf);
-//     return buf;
-// }
+/*  Callback --------------------------------------------------------------- */
 
-// void sad_wnd_pos(sad_wnd *wnd, int *x, int *y)
-// {
-//     RECT r;
-//     GetClientRect(wnd->handle, &r);
-//     ClientToScreen(wnd->handle, (POINT*)&r);
-//     *x = r.left;
-//     *y = r.top;
-// }
-
-// void sad_wnd_size(sad_wnd *wnd, int *w, int *h)
-// {
-//     RECT r;
-//     GetClientRect(wnd->handle, &r);
-//     *w = r.right;
-//     *h = r.bottom;
-// }
-
-// void sad_wnd_bounds(sad_wnd* wnd, int* x, int* y, int* w, int* h)
-// {
-//     RECT r;
-//     GetClientRect(wnd->handle, &r);
-//     ClientToScreen(wnd->handle, (POINT*)&r);
-//     *x = r.left;
-//     *y = r.top;
-//     *w = r.right;
-//     *h = r.bottom;
-// }
-
-// int sad_wnd_minimized(sad_wnd* wnd)
-// {
-//     return IsIconic(wnd->handle);
-// }
-
-// int sad_wnd_maximized(sad_wnd* wnd)
-// {
-//     return IsZoomed(wnd->handle);
-// }
-
-// int sad_wnd_visible(sad_wnd* wnd)
-// {
-//     return IsWindowVisible(wnd->handle);
-// }
-
-// /* SAD_WND_BORDERLESS, SAD_WND_FULLSCREEN or 0 for windowed */
-// int sad_wnd_mode(sad_wnd* wnd)
-// {
-//     return wnd->flags & (SAD_WND_FULLSCREEN | SAD_WND_BORDERLESS);
-// }
-
-// int sad_wnd_flag(sad_wnd* wnd, int flag)
-// {
-//     return (wnd->flags & flag) != 0;
-// }
-
-// int sad_wnd_backdrop(sad_wnd* wnd)
-// {
-//     return wnd->backdrop;
-// }
-
-
-// void sad_wnd_framesize(sad_wnd* wnd, int* left, int* top, int* right, int* bottom)
-// {
-//     RECT r = {0};
-//     AdjustWindowRectEx(&r, (LONG)GetWindowLongPtrA(wnd->handle, GWL_STYLE), FALSE, 0);
-//     *left = -r.left;
-//     *top = -r.top;
-//     *right = r.right;
-//     *bottom = r.bottom;
-// }
-
-// void sad_wnd_resolution(sad_wnd* wnd, int* w, int* h)
-// {
-//     RECT r;
-//     GetClientRect(wnd->handle, &r);
-//     *w = r.right;
-//     *h = r.bottom;
-// }
-
-// float sad_wnd_dpi(sad_wnd* wnd)
-// {
-//     int x, y;
-//     _wnd_getdpi(wnd, &x, &y);
-//     return (float)x / 96.0f;
-// }
-
-// int sad_wnd_monitor(sad_wnd *wnd)
-// {
-//     int i = 0;
-//     int count = 0;
-//     DISPLAY_DEVICEA device = { sizeof(DISPLAY_DEVICEA) };
-//     HMONITOR monitor = MonitorFromWindow(wnd->handle, MONITOR_DEFAULTTONULL);
-//     MONITORINFOEXA minfo = { sizeof(MONITORINFOEXA) };
-
-//     if (!monitor || !GetMonitorInfoA(monitor, (LPMONITORINFO)&minfo))
-//         return -1;
-
-//     while (EnumDisplayDevicesA(NULL, i++, &device, 0)) {
-//         if (!(device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP))
-//             continue;
-//         if (strncmp(device.DeviceName, minfo.szDevice, CCHDEVICENAME) == 0)
-//             return count;
-//         count++;
-//     }
-    
-//     return -1;
-// }
-
-/*  Callbacks --------------------------------------------------------------- */
-
-// void sad_wnd_set_on_size(sad_wnd* wnd, sad_wnd_size_callback callback)
-// {
-
-// }
-
-// void sad_wnd_set_on_resolution(sad_wnd* wnd, sad_wnd_size_callback callback)
-// {
-
-// }
-
-// void sad_wnd_set_on_dpi(sad_wnd* wnd, sad_wnd_size_callback callback)
-// {
-
-// }
-
-// void sad_wnd_set_on_draw(sad_wnd* wnd, sad_wnd_draw_callback callback)
-// {
-
-// }
-
-// void sad_wnd_set_on_hittest(sad_wnd* wnd, sad_wnd_hittest_callback callback)
-// {
-
-// }
+SAD_API void sad_wnd_set_msg_callback(sad_wnd *wnd, sad_wnd_msg_callback callback)
+{
+    wnd->on_message = callback;
+}
 
 /*
 * sad_monitor
@@ -1023,6 +1159,8 @@ static void _wnd_load_ext()
             hDwm, "DwmEnableBlurBehindWindow");
         DwmDefWindowProc = (DwmDefWindowProcType)GetProcAddress(
             hDwm, "DwmDefWindowProc");
+        DwmSetWindowAttribute = (DwmSetWindowAttributeType)GetProcAddress(
+            hDwm, "DwmSetWindowAttribute");
     }
     if ((hShcore = LoadLibraryW(L"Shcore.dll"))) {
         SetProcessDpiAwareness = (SetProcessDpiAwarenessType)GetProcAddress(
@@ -1061,6 +1199,7 @@ static void _wnd_free_ext()
         DwmExtendFrameIntoClientArea = NULL;
         DwmEnableBlurBehindWindow = NULL;
         DwmDefWindowProc = NULL;
+        DwmSetWindowAttribute = NULL;
     }
     if (hShcore) {
         FreeLibrary(hShcore);
@@ -1179,6 +1318,21 @@ static void _wnd_bounds(RECT* bounds, int width, int height, int flags, int styl
     }
 }
 
+int _wnd_monitor_bounds(sad_wnd *wnd, int *x, int *y, int *width, int *height)
+{
+    HMONITOR monitor = MonitorFromWindow(wnd->handle, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO info = {sizeof(MONITORINFO)};
+
+    if (!GetMonitorInfoW(monitor, &info))
+        return 0;
+    
+    *x = info.rcMonitor.left;
+    *y = info.rcMonitor.top;
+    *width = info.rcMonitor.right - info.rcMonitor.left;
+    *height = info.rcMonitor.bottom - info.rcMonitor.top;
+    return 1;
+}
+
 static sad_wnd* _wnd_create(const char* name, const RECT* bounds, int style, int flags)
 {
     HINSTANCE inst;
@@ -1211,6 +1365,7 @@ static sad_wnd* _wnd_create(const char* name, const RECT* bounds, int style, int
 
     wnd = (sad_wnd*)calloc(1, sizeof(sad_wnd));
     wnd->flags = flags;
+    wnd->mouse_last_x = INT_MIN;
 
     /* `wnd->handle` is assigned in `WM_NCCREATE` */
     CreateWindowExW(
@@ -1278,20 +1433,14 @@ static int _wnd_flags_to_style(int flags)
     }
 }
 
-static void _wnd_apply_style(sad_wnd *wnd, int old_flags)
+static void _wnd_apply_style(sad_wnd *wnd)
 {
-    int style, mask = ~_wnd_flags_to_style(old_flags);
+    int style = (int)GetWindowLongPtrW(wnd->handle, GWL_STYLE);
     
-    /* get new style */
-    style = mask & (long)GetWindowLongPtrW(wnd->handle, GWL_STYLE);
-    style |= _wnd_flags_to_style(wnd->flags);
-
-    if (!(wnd->flags & SAD_WND_MAXIMIZE)) {
-        style &= ~WS_MAXIMIZE;
-    }
-    
-    /* Set style */
+    style &= ~(WS_OVERLAPPEDWINDOW | WS_POPUPWINDOW); /* remove decorative styles */
+    style |= _wnd_flags_to_style(wnd->flags); /* add new deco styles */
     SetWindowLongPtrW(wnd->handle, GWL_STYLE, (LONG_PTR)style);
+
     SetWindowPos(wnd->handle, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
         SWP_FRAMECHANGED);
 }
@@ -1308,10 +1457,10 @@ static void _wnd_apply_frame(sad_wnd *wnd)
         margins.cyBottomHeight = -1;
         margins.cyTopHeight = -1;
     } else if (wnd->flags & SAD_WND_UNDECORATED) {
-        margins.cxLeftWidth = -1;
+        /*margins.cxLeftWidth = -1;
         margins.cxRightWidth = -1;
         margins.cyBottomHeight = -1;
-        margins.cyTopHeight = -1;
+        margins.cyTopHeight = -1;*/
     }
     else if (wnd->flags & SAD_WND_OVERFRAME) {
         RECT r = {0};
@@ -1407,7 +1556,7 @@ static void _wnd_leave_fullscreen(sad_wnd *wnd)
         wnd->handle,
         HWND_NOTOPMOST,
         r.left, r.top, r.right, r.bottom,
-        SWP_NOACTIVATE
+        SWP_NOACTIVATE|SWP_NOZORDER
     );
 }
 
@@ -1608,8 +1757,9 @@ static int _wnd_wmnchittest(sad_wnd* wnd, WPARAM wp, LPARAM lp, LRESULT* result)
     AdjustWindowRectEx(&frame, (LONG)GetWindowLongPtrA(wnd->handle, GWL_STYLE), FALSE, 0);
 
     /* User test */
-    if (wnd->on_hittest) {
-        *result = wnd->on_hittest(wnd, point.x, point.y);
+    if (wnd->on_message) {
+        sad_wnd_msg data = {point.x, point.y};
+        *result = wnd->on_message(wnd, SAD_WND_MSG_HITTEST, &data);
         if (*result != SAD_WNDHIT_NONE)
             return 1;
     }
@@ -1672,20 +1822,198 @@ static void _wnd_wmsize(sad_wnd* wnd, WPARAM wp, LPARAM lp)
         break;
     }
     
-    if (wnd->on_size)
-        wnd->on_size(wnd, width, height);
-}
-
-static void _wnd_wminput(sad_wnd* wnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT* result)
-{
-
+    if (wnd->on_message) {
+        sad_wnd_msg data = { width, height };
+        wnd->on_message(wnd, SAD_WND_MSG_RESIZE, &data);
+    }
 }
 
 /* Event Loop --------------------------------------------------------------- */
+/* https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes */
+
+unsigned char key_table[256] = {
+    SAD_KEY_NONE, /* 0x00 - None */
+    SAD_KEY_NONE, /* 0x01 - VK_LBUTTON */
+    SAD_KEY_NONE, /* 0x02 - VK_RBUTTON */
+    SAD_KEY_NONE, /* 0x03 - VK_CANCEL */
+    SAD_KEY_NONE, /* 0x04 - VK_MBUTTON */
+    SAD_KEY_NONE, /* 0x05 - VK_XBUTTON1 */
+    SAD_KEY_NONE, /* 0x06 - VK_XBUTTON2 */
+    SAD_KEY_NONE, /* 0x07 - Reserved */
+    SAD_KEY_BACKSPACE, /* 0x08 - Backspace */
+    SAD_KEY_TAB, /* 0x09 - Tab */
+    SAD_KEY_NONE, /* 0x0A - Reserved */
+    SAD_KEY_NONE, /* 0x0B - Reserved */
+    SAD_KEY_NONE, /* 0x0C - Clear */
+    SAD_KEY_ENTER, /* 0x0D - Enter */
+    SAD_KEY_NONE, /* 0x0E - Unassigned */
+    SAD_KEY_NONE, /* 0x0F - Unassigned */
+    SAD_KEY_SHIFT, /* 0x10 - Shift */
+    SAD_KEY_CTRL, /* 0x11 - Ctrl */
+    SAD_KEY_ALT, /* 0x12 - Alt */
+    SAD_KEY_PAUSE, /* 0x13 - Pause */
+    SAD_KEY_CAPS, /* 0x14 - Caps lock */
+    SAD_KEY_NONE, /* 0x15 - ignore */
+    SAD_KEY_NONE, /* 0x16 - ignore */
+    SAD_KEY_NONE, /* 0x17 - ignore */
+    SAD_KEY_NONE, /* 0x18 - ignore */
+    SAD_KEY_NONE, /* 0x19 - ignore */
+    SAD_KEY_NONE, /* 0x1A - ignore */
+    SAD_KEY_ESC, /* 0x1B - Escape */
+    SAD_KEY_NONE, /* 0x1C - ignore */
+    SAD_KEY_NONE, /* 0x1D - ignore */
+    SAD_KEY_NONE, /* 0x1E - ignore */
+    SAD_KEY_NONE, /* 0x1F - ignore */
+    SAD_KEY_SPACE, /* 0x20 - Space */
+    SAD_KEY_PAGE_UP, /* 0x21 - Unassigned */
+    SAD_KEY_PAGE_DOWN, /* 0x22 - Unassigned */
+    SAD_KEY_END, /* 0x23 - Unassigned */
+    SAD_KEY_HOME, /* 0x24 - Unassigned */
+    SAD_KEY_LEFT, /* 0x25 - Unassigned */
+    SAD_KEY_UP, /* 0x26 - Unassigned */
+    SAD_KEY_RIGHT, /* 0x27 - Unassigned */
+    SAD_KEY_DOWN, /* 0x28 - Unassigned */
+    SAD_KEY_NONE, /* 0x29 - Select */
+    SAD_KEY_PRINT, /* 0x2A - Unassigned */
+    SAD_KEY_NONE, /* 0x2B - Execute */
+    SAD_KEY_NONE, /* 0x2C - Print screen */
+    SAD_KEY_INSERT, /* 0x2D - Unassigned */
+    SAD_KEY_DELETE, /* 0x2E - Unassigned */
+    SAD_KEY_NONE, /* 0x2F - Unassigned */
+    '0', /* 0x30 - Unassigned */
+    '1', /* 0x31 - Unassigned */
+    '2', /* 0x32 - Unassigned */
+    '3', /* 0x33 - Unassigned */
+    '4', /* 0x34 - Unassigned */
+    '5', /* 0x35 - Unassigned */
+    '6', /* 0x36 - Unassigned */
+    '7', /* 0x37 - Unassigned */
+    '8', /* 0x38 - Unassigned */
+    '9', /* 0x39 - Unassigned */
+    SAD_KEY_NONE, /* 0x3A - Unassigned */
+    SAD_KEY_NONE, /* 0x3B - Unassigned */
+    SAD_KEY_NONE, /* 0x3C - Unassigned */
+    SAD_KEY_NONE, /* 0x3D - Unassigned */
+    SAD_KEY_NONE, /* 0x3E - Unassigned */
+    SAD_KEY_NONE, /* 0x3F - Unassigned */
+    SAD_KEY_NONE, /* 0x40 - Unassigned */
+    'A', /* 0x41 - Unassigned */
+    'B', /* 0x42 - Unassigned */
+    'C', /* 0x43 - Unassigned */
+    'D', /* 0x44 - Unassigned */
+    'E', /* 0x45 - Unassigned */
+    'F', /* 0x46 - Unassigned */
+    'G', /* 0x47 - Unassigned */
+    'H', /* 0x48 - Unassigned */
+    'I', /* 0x49 - Unassigned */
+    'J', /* 0x4A - Unassigned */
+    'K', /* 0x4B - Unassigned */
+    'L', /* 0x4C - Unassigned */
+    'M', /* 0x4D - Unassigned */
+    'N', /* 0x4E - Unassigned */
+    'O', /* 0x4F - Unassigned */
+    'P', /* 0x50 - Unassigned */
+    'Q', /* 0x51 - Unassigned */
+    'R', /* 0x52 - Unassigned */
+    'S', /* 0x53 - Unassigned */
+    'T', /* 0x54 - Unassigned */
+    'U', /* 0x55 - Unassigned */
+    'V', /* 0x56 - Unassigned */
+    'W', /* 0x57 - Unassigned */
+    'X', /* 0x58 - Unassigned */
+    'Y', /* 0x59 - Unassigned */
+    'Z', /* 0x5A - Unassigned */
+    SAD_KEY_NONE, /* 0x5B - Left Windows key */
+    SAD_KEY_NONE, /* 0x5C - Right Windows key */
+    SAD_KEY_NONE, /* 0x5D - Apps */
+    SAD_KEY_NONE, /* 0x5E - Reserved */
+    SAD_KEY_NONE, /* 0x5F - Computer Sleep key */
+    SAD_KEY_NUM0, /* 0x60 - Unassigned */
+    SAD_KEY_NUM1, /* 0x61 - Unassigned */
+    SAD_KEY_NUM2, /* 0x62 - Unassigned */
+    SAD_KEY_NUM3, /* 0x63 - Unassigned */
+    SAD_KEY_NUM4, /* 0x64 - Unassigned */
+    SAD_KEY_NUM5, /* 0x65 - Unassigned */
+    SAD_KEY_NUM6, /* 0x66 - Unassigned */
+    SAD_KEY_NUM7, /* 0x67 - Unassigned */
+    SAD_KEY_NUM8, /* 0x68 - Unassigned */
+    SAD_KEY_NUM9, /* 0x69 - Unassigned */
+    SAD_KEY_MULTIPLY, /* 0x6A - Unassigned */
+    SAD_KEY_ADD, /* 0x6B - Unassigned */
+    SAD_KEY_NONE, /* 0x6C - Seperator */
+    SAD_KEY_SUBTRACT, /* 0x6D - Unassigned */
+    SAD_KEY_COMMA, /* 0x6E - Unassigned */
+    SAD_KEY_DIVIDE, /* 0x6F - Unassigned */
+    SAD_KEY_F1, /* 0x70 - Unassigned */
+    SAD_KEY_F2, /* 0x71 - Unassigned */
+    SAD_KEY_F3, /* 0x72 - Unassigned */
+    SAD_KEY_F4, /* 0x73 - Unassigned */
+    SAD_KEY_F5, /* 0x74 - Unassigned */
+    SAD_KEY_F6, /* 0x75 - Unassigned */
+    SAD_KEY_F7, /* 0x76 - Unassigned */
+    SAD_KEY_F8, /* 0x77 - Unassigned */
+    SAD_KEY_F9, /* 0x78 - Unassigned */
+    SAD_KEY_F10, /* 0x79 - Unassigned */
+    SAD_KEY_F11, /* 0x7A - Unassigned */
+    SAD_KEY_F12, /* 0x7B - Unassigned */
+    SAD_KEY_NONE, /* 0x7C - F13 */
+    SAD_KEY_NONE, /* 0x7D - F14 */
+    SAD_KEY_NONE, /* 0x7E - F15 */
+    SAD_KEY_NONE, /* 0x7F - F16 */
+    SAD_KEY_NONE, /* 0x80 - F17 */
+    SAD_KEY_NONE, /* 0x81 - F18 */
+    SAD_KEY_NONE, /* 0x82 - F19 */
+    SAD_KEY_NONE, /* 0x83 - F20 */
+    SAD_KEY_NONE, /* 0x84 - F21 */
+    SAD_KEY_NONE, /* 0x85 - F22 */
+    SAD_KEY_NONE, /* 0x86 - F23 */
+    SAD_KEY_NONE, /* 0x87 - F24 */
+    SAD_KEY_NONE, /* 0x88 - Reserved */
+    SAD_KEY_NONE, /* 0x89 - Reserved */
+    SAD_KEY_NONE, /* 0x8A - Reserved */
+    SAD_KEY_NONE, /* 0x8B - Reserved */
+    SAD_KEY_NONE, /* 0x8C - Reserved */
+    SAD_KEY_NONE, /* 0x8D - Reserved */
+    SAD_KEY_NONE, /* 0x8E - Reserved */
+    SAD_KEY_NONE, /* 0x8F - Reserved */
+    SAD_KEY_NUMLOCK, /* 0x90 - Unassigned */
+    SAD_KEY_NONE, /* 0x91 - Scroll */
+    SAD_KEY_NONE, /* 0x92 - Unassigned */
+    SAD_KEY_NONE, /* 0x93 - Unassigned */
+    SAD_KEY_NONE, /* 0x94 - Unassigned */
+    SAD_KEY_NONE, /* 0x95 - Unassigned */
+    SAD_KEY_NONE, /* 0x96 - Unassigned */
+    SAD_KEY_NONE, /* 0x97 - Unassigned */
+    SAD_KEY_NONE, /* 0x98 - Unassigned */
+    SAD_KEY_NONE, /* 0x99 - Unassigned */
+    SAD_KEY_NONE, /* 0x9A - Unassigned */
+    SAD_KEY_NONE, /* 0x9B - Unassigned */
+    SAD_KEY_NONE, /* 0x9C - Unassigned */
+    SAD_KEY_NONE, /* 0x9D - Unassigned */
+    SAD_KEY_NONE, /* 0x9E - Unassigned */
+    SAD_KEY_NONE, /* 0x9F - Unassigned */
+    SAD_KEY_LSHIFT, /* 0xA0 - Unassigned */
+    SAD_KEY_RSHIFT, /* 0xA1 - Unassigned */
+    SAD_KEY_LCTRL, /* 0xA2 - Unassigned */
+    SAD_KEY_RCTRL, /* 0xA3 - Unassigned */
+    SAD_KEY_LALT, /* 0xA4 - Unassigned */
+    SAD_KEY_RALT, /* 0xA5 - Unassigned */
+    SAD_KEY_NONE, /* 0xA6 - Unassigned */
+    SAD_KEY_NONE, /* 0xA7 - Unassigned */
+    SAD_KEY_NONE, /* 0xA8 - Unassigned */
+    SAD_KEY_NONE, /* 0xA9 - Unassigned */
+    SAD_KEY_NONE, /* 0xAA - Unassigned */
+    SAD_KEY_NONE, /* 0xAB - Unassigned */
+    SAD_KEY_NONE, /* 0xAC - Unassigned */
+    SAD_KEY_NONE, /* 0xAD - Unassigned */
+    SAD_KEY_NONE, /* 0xAE - Unassigned */
+    SAD_KEY_NONE, /* 0xAF - Unassigned */
+};
 
 static LRESULT _wnd_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     sad_wnd* wnd = (sad_wnd*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    sad_wnd_msg data = {0};
     LRESULT result;
 
     if (DwmDefWindowProc && DwmDefWindowProc(hwnd, msg, wp, lp, &result))
@@ -1720,19 +2048,32 @@ static LRESULT _wnd_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         int activated = (int)LOWORD(wp);
         int minimized = (int)HIWORD(wp);
 
+        #ifdef SAD_BUILD_DEBUG
         printf("[INFO]: WM_ACTIVATE (active=%i, minimized=%i)\n", activated, minimized);
+        #endif
+
         _wnd_wmactivate(wnd, activated, minimized);
         return 0;
     }
 
     case WM_SIZE: {
+        #ifdef SAD_BUILD_DEBUG
         printf("[INFO]: WM_SIZE\n");
+        #endif
+
         _wnd_wmsize(wnd, wp, lp);
         return 0;
     }
+
+    case WM_SHOWWINDOW:
+        if (wp == TRUE) wnd->flags |= SAD_WND_HIDDEN;
+        else wnd->flags &= ~SAD_WND_HIDDEN;
     
     case WM_PAINT: {
+        #ifdef SAD_BUILD_DEBUG
         printf("[INFO]: WM_PAINT\n");
+        #endif
+
         ValidateRect(wnd->handle, NULL);
         return 0;
     }
@@ -1745,13 +2086,141 @@ static LRESULT _wnd_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     
+    /* Keyboard Messages ----------------------------------- */
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: {
+        data.key.code = key_table[(unsigned char)wp];
+        data.key.state = 1;
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_KEY, &data);
+    } return 0;
+    case WM_KEYUP:
+    case WM_SYSKEYUP: {
+        data.key.code = key_table[(unsigned char)wp];
+        data.key.state = 0;
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_KEY, &data);
+    } return 0;
+    case WM_UNICHAR:
+        data.char_code.val = (uint32_t)wp;
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_CHAR_CODE, &data);
+        return 0;
+    
+    /* Mouse Messages ----------------------------------- */
+    case WM_LBUTTONDOWN:
+        data.mouse.btn_state = 1;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_LBUTTON, &data);
+        return 0;
+    case WM_LBUTTONUP:
+        data.mouse.btn_state = 0;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_LBUTTON, &data);
+        return 0;
+    case WM_LBUTTONDBLCLK:
+        data.mouse.btn_state = 1;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_LBUTTONDBLCLK, &data);
+        return 0;
+    case WM_RBUTTONDOWN:
+        data.mouse.btn_state = 1;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_RBUTTON, &data);
+        return 0;
+    case WM_RBUTTONUP:
+        data.mouse.btn_state = 0;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_RBUTTON, &data);
+        return 0;
+    case WM_RBUTTONDBLCLK:
+        data.mouse.btn_state = 1;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_RBUTTONDBLCLK, &data);
+        return 0;
+    case WM_MBUTTONDOWN:
+        data.mouse.btn_state = 1;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_MBUTTON, &data);
+        return 0;
+    case WM_MBUTTONUP:
+        data.mouse.btn_state = 0;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_MBUTTON, &data);
+        return 0;
+    case WM_MBUTTONDBLCLK:
+        data.mouse.btn_state = 1;
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_MBUTTONDBLCLK, &data);
+        return 0;
+    case WM_MOUSEMOVE:
+        data.mouse.x = GET_X_LPARAM(lp);
+        data.mouse.y = GET_Y_LPARAM(lp);
+
+        if (wnd->mouse_last_x != INT_MIN) {
+            data.mouse.delta_x = data.mouse.x - wnd->mouse_last_x;
+            data.mouse.delta_y = data.mouse.y - wnd->mouse_last_y;
+        } else if (wnd->on_message) {
+            /* make sure we receive "WM_MOUSE_LEAVE" and "WM_MOUSE_HOVER" */
+            TRACKMOUSEEVENT tme = {
+                sizeof(TRACKMOUSEEVENT),
+                TME_LEAVE|TME_HOVER,
+                wnd->handle,
+                HOVER_DEFAULT
+            };
+            TrackMouseEvent(&tme);
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_ENTER, &data);
+        }
+
+        wnd->mouse_last_x = data.mouse.x;
+        wnd->mouse_last_y = data.mouse.y;
+
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_MOVE, &data);
+        return 0;
+    case WM_MOUSELEAVE:
+        wnd->mouse_last_x = INT_MIN;
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_LEAVE, &data);
+        return 0;
+    case WM_MOUSEWHEEL:
+        data.scroll.delta_y = (short)HIWORD(wp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_SCROLL, &data);
+        return 0;
+    case WM_MOUSEHWHEEL:
+        data.scroll.delta_x = (short)HIWORD(wp);
+        if (wnd->on_message)
+            wnd->on_message(wnd, SAD_WND_MSG_MOUSE_SCROLL, &data);
+        return 0;
+    
     /* Theme Messages ----------------------------------- */
     case WM_DWMCOMPOSITIONCHANGED:
         break;
     case WM_DWMCOLORIZATIONCOLORCHANGED:
         break;
     case WM_DISPLAYCHANGE:
+        #ifdef SAD_BUILD_DEBUG
         printf("[INFO]: WM_DISPLAYCHANGE\n");
+        #endif
         break;
     case WM_DPICHANGED:
         break;
